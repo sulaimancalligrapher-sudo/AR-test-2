@@ -21,7 +21,8 @@ import {
 } from 'lucide-react';
 import { CalligraphyLesson, MaterialType } from '../types/calligraphy';
 import { buildLesson3DGroup } from '../utils/calligraphy3D';
-import { cvDetector, playARSuccessChime } from '../utils/cvDetector';
+import { calligraphyClassifier, ClassificationResult } from '../utils/calligraphyClassifier';
+import { playARSuccessChime } from '../utils/cvDetector';
 
 interface ARCameraViewProps {
   lesson: CalligraphyLesson;
@@ -59,9 +60,11 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
   const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Real-time Optical Target Tracking States
+  // Real-time Visual Classification States
   const [isTargetDetected, setIsTargetDetected] = useState<boolean>(false);
   const [detectionConfidence, setDetectionConfidence] = useState<number>(0);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [isClassifying, setIsClassifying] = useState<boolean>(false);
   const consecutiveMatchesRef = useRef<number>(0);
 
   // Three.js instances ref
@@ -84,6 +87,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     setCameraError(null);
     setIsTargetDetected(false);
     setDetectionConfidence(0);
+    setFeedbackMessage(null);
     consecutiveMatchesRef.current = 0;
     modelScaleRef.current = 0;
 
@@ -100,7 +104,6 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
 
       let stream: MediaStream;
       try {
-        // Try back camera
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: facing },
@@ -110,8 +113,6 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
           audio: false,
         });
       } catch (e) {
-        // Fallback for laptops/webcams
-        console.warn('Fallback to default video device:', e);
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false,
@@ -154,6 +155,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     }
     setIsTargetDetected(false);
     setDetectionConfidence(0);
+    setFeedbackMessage(null);
     setViewMode('idle');
   };
 
@@ -174,39 +176,68 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     setViewMode('studio');
   };
 
-  // Manual Trigger / Force Lock Override
-  const forceLockTarget = () => {
-    setIsTargetDetected(true);
-    setDetectionConfidence(1.0);
-    playARSuccessChime();
+  // Active Scan & Real Visual Classification of the Camera Feed
+  const scanAndIdentifyLetter = () => {
+    if (!videoRef.current || videoRef.current.readyState < 2) {
+      setFeedbackMessage('الكاميرا غير جاهزة بعد، يرجى الانتظار ثانية.');
+      return;
+    }
+
+    setIsClassifying(true);
+    const res = calligraphyClassifier.classifyVideoFrame(videoRef.current);
+    setDetectionConfidence(res.confidence);
+    setFeedbackMessage(res.message);
+
+    if (res.matched && res.lessonId) {
+      if (res.lessonId !== lesson.id && onDetectOtherLesson) {
+        onDetectOtherLesson(res.lessonId);
+      }
+      setIsTargetDetected(true);
+      playARSuccessChime();
+    } else {
+      // Rejection: Do not show the letter!
+      setIsTargetDetected(false);
+    }
+
+    setTimeout(() => {
+      setIsClassifying(false);
+    }, 400);
   };
 
   // Reset Scan
   const resetScan = () => {
     setIsTargetDetected(false);
     setDetectionConfidence(0);
+    setFeedbackMessage(null);
     consecutiveMatchesRef.current = 0;
     modelScaleRef.current = 0;
   };
 
-  // Optical Detection Loop (Active when in 'ar' mode and target is not yet locked)
+  // Background Optical Detection Loop
   useEffect(() => {
     if (viewMode !== 'ar' || isTargetDetected) return;
 
     const interval = setInterval(() => {
       if (!videoRef.current || videoRef.current.readyState < 2) return;
 
-      const result = cvDetector.analyzeFrame(videoRef.current, lesson.id);
+      const result = calligraphyClassifier.classifyVideoFrame(videoRef.current);
       setDetectionConfidence(result.confidence);
 
-      if (result.detected) {
-        if (result.detectedLessonId && result.detectedLessonId !== lesson.id && onDetectOtherLesson) {
-          onDetectOtherLesson(result.detectedLessonId);
+      if (result.matched && result.lessonId) {
+        consecutiveMatchesRef.current += 1;
+        // Require 2 consecutive frames to prevent momentary glitches
+        if (consecutiveMatchesRef.current >= 2) {
+          if (result.lessonId !== lesson.id && onDetectOtherLesson) {
+            onDetectOtherLesson(result.lessonId);
+          }
+          setIsTargetDetected(true);
+          setFeedbackMessage(result.message);
+          playARSuccessChime();
         }
-        setIsTargetDetected(true);
-        playARSuccessChime();
+      } else {
+        consecutiveMatchesRef.current = 0;
       }
-    }, 150);
+    }, 280);
 
     return () => clearInterval(interval);
   }, [viewMode, isTargetDetected, lesson.id, onDetectOtherLesson]);
@@ -630,28 +661,44 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
 
               {/* Sub-reticle Quick Action */}
               {!isTargetDetected ? (
-                <div className="mt-3 flex items-center gap-2 pointer-events-auto">
-                  <button
-                    onClick={forceLockTarget}
-                    className="px-3.5 py-1.5 rounded-full bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-amber-500/20 transition active:scale-95"
-                    title="تجاوز المسح وتثبيت الحرف مباشرة"
-                  >
-                    <Zap className="w-3.5 h-3.5" />
-                    <span>تثبيت الحرف الآن (فوري)</span>
-                  </button>
+                <div className="mt-3 flex flex-col items-center gap-2 pointer-events-auto w-full">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={scanAndIdentifyLetter}
+                      disabled={isClassifying}
+                      className="px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-xs font-bold flex items-center gap-2 shadow-xl shadow-amber-500/25 transition active:scale-95 cursor-pointer"
+                      title="فحص صورة الحرف في الكاميرا وتحديد الدرس"
+                    >
+                      <ScanLine className={`w-4 h-4 ${isClassifying ? 'animate-spin' : ''}`} />
+                      <span>{isClassifying ? 'جاري فحص الحرف...' : '📸 فحص وتحليل الحرف في الكاميرا'}</span>
+                    </button>
 
-                  <button
-                    onClick={onOpenTargetModal}
-                    className="px-3 py-1.5 rounded-full bg-stone-900/80 hover:bg-stone-800 text-stone-300 text-xs font-medium border border-stone-700 transition"
-                  >
-                    عرض البطاقة
-                  </button>
+                    <button
+                      onClick={onOpenTargetModal}
+                      className="px-3 py-2 rounded-full bg-stone-900/80 hover:bg-stone-800 text-stone-300 text-xs font-medium border border-stone-700 transition"
+                    >
+                      عرض نموذج الصفحة
+                    </button>
+                  </div>
+
+                  {/* Feedback Message (Rejection or Success) */}
+                  {feedbackMessage && (
+                    <div className="px-3 py-1.5 rounded-xl text-[11px] font-medium max-w-xs text-center shadow-lg transition-all bg-stone-950/90 text-amber-200 border border-stone-800 backdrop-blur">
+                      {feedbackMessage}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="mt-3 pointer-events-auto">
+                <div className="mt-3 pointer-events-auto flex flex-col items-center gap-1.5">
                   <span className="text-[11px] text-stone-200 bg-stone-950/85 px-3 py-1 rounded-full border border-stone-800 backdrop-blur">
                     اسحب الشاشة لتدوير الحرف وفحص ميزان النقاط
                   </span>
+                  <button
+                    onClick={resetScan}
+                    className="text-xs text-amber-400 hover:text-amber-300 underline font-medium"
+                  >
+                    مسح حرف أو صفحة أخرى
+                  </button>
                 </div>
               )}
             </div>
