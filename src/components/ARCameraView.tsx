@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { 
   Camera, 
@@ -15,10 +15,13 @@ import {
   AlertCircle,
   PlayCircle,
   RefreshCw,
-  Box
+  Box,
+  Zap,
+  Check
 } from 'lucide-react';
 import { CalligraphyLesson, MaterialType } from '../types/calligraphy';
 import { buildLesson3DGroup } from '../utils/calligraphy3D';
+import { cvDetector, playARSuccessChime } from '../utils/cvDetector';
 
 interface ARCameraViewProps {
   lesson: CalligraphyLesson;
@@ -53,8 +56,11 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
   const [isLoadingCamera, setIsLoadingCamera] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [isTargetLocked, setIsTargetLocked] = useState<boolean>(true);
-  const [isScanning, setIsScanning] = useState<boolean>(false);
+
+  // Real-time Optical Target Tracking States
+  const [isTargetDetected, setIsTargetDetected] = useState<boolean>(false);
+  const [detectionConfidence, setDetectionConfidence] = useState<number>(0);
+  const consecutiveMatchesRef = useRef<number>(0);
 
   // Three.js instances ref
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -62,6 +68,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const currentModelGroupRef = useRef<THREE.Group | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
+  const modelScaleRef = useRef<number>(0);
 
   // Touch / Mouse interaction states for rotating 3D letter
   const isDraggingRef = useRef<boolean>(false);
@@ -73,6 +80,10 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     const facing = targetFacing || cameraFacing;
     setIsLoadingCamera(true);
     setCameraError(null);
+    setIsTargetDetected(false);
+    setDetectionConfidence(0);
+    consecutiveMatchesRef.current = 0;
+    modelScaleRef.current = 0;
 
     // Stop previous stream
     if (streamRef.current) {
@@ -87,7 +98,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
 
       let stream: MediaStream;
       try {
-        // Try requested facing mode (ideal for mobile back camera)
+        // Try back camera
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: facing },
@@ -97,7 +108,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
           audio: false,
         });
       } catch (e) {
-        // Fallback for laptops/webcams where facingMode might fail
+        // Fallback for laptops/webcams
         console.warn('Fallback to default video device:', e);
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
@@ -139,6 +150,8 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setIsTargetDetected(false);
+    setDetectionConfidence(0);
     setViewMode('idle');
   };
 
@@ -154,8 +167,50 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
   // Enter 3D Studio mode without camera
   const enterStudioMode = () => {
     stopCamera();
+    setIsTargetDetected(true);
+    modelScaleRef.current = 1;
     setViewMode('studio');
   };
+
+  // Manual Trigger / Force Lock Override
+  const forceLockTarget = () => {
+    setIsTargetDetected(true);
+    setDetectionConfidence(1.0);
+    playARSuccessChime();
+  };
+
+  // Reset Scan
+  const resetScan = () => {
+    setIsTargetDetected(false);
+    setDetectionConfidence(0);
+    consecutiveMatchesRef.current = 0;
+    modelScaleRef.current = 0;
+  };
+
+  // Optical Detection Loop (Active when in 'ar' mode and target is not yet locked)
+  useEffect(() => {
+    if (viewMode !== 'ar' || isTargetDetected) return;
+
+    const interval = setInterval(() => {
+      if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+      const result = cvDetector.analyzeFrame(videoRef.current);
+      setDetectionConfidence(result.confidence);
+
+      if (result.detected) {
+        consecutiveMatchesRef.current += 1;
+        // Require 2 consecutive frames for stability
+        if (consecutiveMatchesRef.current >= 2) {
+          setIsTargetDetected(true);
+          playARSuccessChime();
+        }
+      } else {
+        consecutiveMatchesRef.current = Math.max(0, consecutiveMatchesRef.current - 1);
+      }
+    }, 180);
+
+    return () => clearInterval(interval);
+  }, [viewMode, isTargetDetected]);
 
   // Initialize Three.js Canvas
   useEffect(() => {
@@ -213,9 +268,25 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
       const elapsedTime = clock.getElapsedTime();
 
       if (currentModelGroupRef.current) {
-        currentModelGroupRef.current.position.y = Math.sin(elapsedTime * 1.5) * 0.08;
-        currentModelGroupRef.current.rotation.x = modelRotationRef.current.x;
-        currentModelGroupRef.current.rotation.y = modelRotationRef.current.y + Math.sin(elapsedTime * 0.4) * 0.05;
+        // Handle visibility and scale
+        // In AR mode: only visible when isTargetDetected is true
+        // In studio mode: always visible
+        const targetScale = (viewMode === 'studio' || isTargetDetected) ? 1.0 : 0.0;
+        modelScaleRef.current += (targetScale - modelScaleRef.current) * 0.12;
+
+        if (modelScaleRef.current > 0.01) {
+          currentModelGroupRef.current.visible = true;
+          currentModelGroupRef.current.scale.set(
+            modelScaleRef.current,
+            modelScaleRef.current,
+            modelScaleRef.current
+          );
+          currentModelGroupRef.current.position.y = Math.sin(elapsedTime * 1.5) * 0.08;
+          currentModelGroupRef.current.rotation.x = modelRotationRef.current.x;
+          currentModelGroupRef.current.rotation.y = modelRotationRef.current.y + Math.sin(elapsedTime * 0.4) * 0.05;
+        } else {
+          currentModelGroupRef.current.visible = false;
+        }
       }
 
       renderer.render(scene, camera);
@@ -242,7 +313,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, []);
+  }, [viewMode, isTargetDetected]);
 
   // Update 3D Model when lesson, material, or options change
   useEffect(() => {
@@ -264,13 +335,14 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     }
 
     const newGroup = buildLesson3DGroup(lesson, materialType, showPointsScale, showPenAngle);
+    newGroup.visible = isTargetDetected || viewMode === 'studio';
     sceneRef.current.add(newGroup);
     currentModelGroupRef.current = newGroup;
-  }, [lesson, materialType, showPointsScale, showPenAngle]);
+  }, [lesson, materialType, showPointsScale, showPenAngle, isTargetDetected, viewMode]);
 
   // Touch and Mouse Drag to rotate 3D letter
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (viewMode === 'idle') return;
+    if (viewMode === 'idle' || (!isTargetDetected && viewMode === 'ar')) return;
     isDraggingRef.current = true;
     prevPointerRef.current = { x: e.clientX, y: e.clientY };
   };
@@ -293,16 +365,6 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
 
   const resetRotation = () => {
     modelRotationRef.current = { x: 0.1, y: 0 };
-  };
-
-  // Re-scan simulation
-  const handleRescan = () => {
-    setIsScanning(true);
-    setIsTargetLocked(false);
-    setTimeout(() => {
-      setIsScanning(false);
-      setIsTargetLocked(true);
-    }, 1000);
   };
 
   return (
@@ -335,11 +397,15 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
         />
       )}
 
-      {/* 3. Three.js WebGL Canvas for 3D Calligraphy (Visible in 'ar' and 'studio') */}
+      {/* 3. Three.js WebGL Canvas for 3D Calligraphy (Visible when target is detected or in studio) */}
       <canvas
         ref={canvasRef}
-        className={`absolute inset-0 w-full h-full z-10 ${
-          viewMode === 'idle' ? 'opacity-0 pointer-events-none' : 'opacity-100 cursor-grab active:cursor-grabbing pointer-events-auto'
+        className={`absolute inset-0 w-full h-full z-10 transition-opacity duration-300 ${
+          viewMode === 'idle' 
+            ? 'opacity-0 pointer-events-none' 
+            : isTargetDetected || viewMode === 'studio'
+              ? 'opacity-100 cursor-grab active:cursor-grabbing pointer-events-auto'
+              : 'opacity-0 pointer-events-none'
         }`}
       />
 
@@ -352,7 +418,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
 
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-bold mb-3 border border-amber-500/30">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>تجربة الواقع المعزز للكتاب التعليمي</span>
+            <span>التعرف البصري بالواقع المعزز (AR Image Tracking)</span>
           </div>
 
           <h2 className="text-xl sm:text-2xl font-bold text-stone-100 mb-2 font-['Amiri',serif]">
@@ -360,7 +426,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
           </h2>
 
           <p className="text-xs sm:text-sm text-stone-400 max-w-md leading-relaxed mb-6">
-            اضغط على زر <strong className="text-amber-300">تشغيل الكاميرا</strong> لتوجيه الهاتف نحو صفحة الدرس في الكتاب ومشاهدة الحرف ثلاثي الأبعاد يرتفع مباشرة في الغرفة فوق الورقة!
+            اضغط على زر <strong className="text-amber-300">تشغيل الكاميرا</strong>، ثم وجّه الكاميرا نحو صفحة الدرس في الكتاب أو البطاقة ليتعرف عليها النظام ويرفع الحرف ثلاثي الأبعاد فوق الصفحة!
           </p>
 
           {/* Camera Error Alert if any */}
@@ -370,14 +436,9 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
                 <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                 <div className="leading-relaxed space-y-2">
                   <p className="font-bold text-amber-300 text-sm">
-                    سبب عدم ظهور نافذة طلب الإذن:
+                    تنبيه إذن الكاميرا:
                   </p>
-                  <p className="text-stone-300">
-                    المتصفح يحجب نافذة الإذن تلقائياً لأنك تتصفح من داخل <strong>إطار المعاينة الداخلي (iFrame)</strong> لحماية خصوصيتك.
-                  </p>
-                  <p className="text-amber-300 font-semibold">
-                    لظهور نافذة طلب الإذن فوراً: اضغط على الزر أدناه لفتح التطبيق في صفحة مستقلة أو جربه على هاتفك:
-                  </p>
+                  <p className="text-stone-300">{cameraError}</p>
                   <div className="pt-1 flex flex-wrap gap-2">
                     <a
                       href={window.location.href}
@@ -386,7 +447,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold transition text-xs"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      فتح في نافذة مستقلة لطلب الإذن
+                      فتح في نافذة مستقلة
                     </a>
                   </div>
                 </div>
@@ -405,7 +466,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
               {isLoadingCamera ? (
                 <>
                   <RefreshCw className="w-5 h-5 animate-spin" />
-                  <span>جاري طلب إذن الكاميرا...</span>
+                  <span>جاري تشغيل الكاميرا...</span>
                 </>
               ) : (
                 <>
@@ -424,7 +485,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
               title="فتح التطبيق في علامة تبويب كاملة بدون إطار"
             >
               <ExternalLink className="w-4 h-4" />
-              <span>نافذة مستقلة (موصى به)</span>
+              <span>نافذة مستقلة</span>
             </a>
 
             {/* 3D Studio inspection mode without camera */}
@@ -450,27 +511,37 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
         </div>
       )}
 
-      {/* 5. In-Camera AR Controls & Reticle (Active when viewMode === 'ar' or 'studio') */}
+      {/* 5. In-Camera AR Viewfinder & Controls (Active when viewMode === 'ar' or 'studio') */}
       {viewMode !== 'idle' && (
         <div className="absolute inset-0 pointer-events-none z-20 flex flex-col justify-between p-3.5 sm:p-4">
           {/* Top Status Header */}
           <div className="flex items-center justify-between pointer-events-auto">
             {/* Status Badge */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-stone-950/85 backdrop-blur-md border border-stone-700 text-xs">
-              {viewMode === 'ar' ? (
-                <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-                  <span className="text-emerald-400 font-bold flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    الكاميرا الحية نشطة • مجسم الحرف فوق الصفحة
-                  </span>
-                </>
-              ) : (
+            <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-stone-950/90 backdrop-blur-md border border-stone-700 text-xs shadow-lg">
+              {viewMode === 'studio' ? (
                 <>
                   <span className="w-2.5 h-2.5 rounded-full bg-sky-500" />
                   <span className="text-sky-300 font-bold flex items-center gap-1">
                     <Box className="w-3.5 h-3.5" />
                     وضع استوديو 3D (معاينة الحرف وزوايا القلم)
+                  </span>
+                </>
+              ) : isTargetDetected ? (
+                <>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                  <span className="text-emerald-400 font-bold flex items-center gap-1">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    تم التعرف على الصفحة! مجسم {lesson.letter} مثبت الآن
+                  </span>
+                </>
+              ) : (
+                <>
+                  <ScanLine className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                  <span className="text-amber-300 font-medium flex items-center gap-1.5">
+                    <span>جاري مسح صفحة الدرس...</span>
+                    <span className="text-stone-400 text-[11px] font-mono">
+                      ({Math.round(detectionConfidence * 100)}%)
+                    </span>
                   </span>
                 </>
               )}
@@ -488,14 +559,14 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
                 </button>
               )}
 
-              {viewMode === 'ar' && (
+              {viewMode === 'ar' && isTargetDetected && (
                 <button
-                  onClick={handleRescan}
-                  title="إعادة مسح وضبط مكان الحرف"
+                  onClick={resetScan}
+                  title="إعادة مسح صفحة جديدة"
                   className="px-2.5 py-1.5 rounded-xl bg-stone-900/85 backdrop-blur-md border border-stone-700 text-stone-200 hover:text-amber-400 transition text-xs flex items-center gap-1 font-medium"
                 >
-                  <ScanLine className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">إعادة ضبط</span>
+                  <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="hidden sm:inline">إعادة مسح</span>
                 </button>
               )}
 
@@ -511,19 +582,79 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
             </div>
           </div>
 
-          {/* AR Target Reticle (Only in AR mode) */}
+          {/* AR Target Reticle Viewfinder (Only in AR mode) */}
           {viewMode === 'ar' && (
-            <div className="relative mx-auto w-56 h-56 sm:w-72 sm:h-72 border-2 border-dashed border-amber-400/40 rounded-3xl flex items-center justify-center transition-all">
-              <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-amber-400 rounded-tr-lg" />
-              <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-amber-400 rounded-tl-lg" />
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-amber-400 rounded-br-lg" />
-              <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-amber-400 rounded-bl-lg" />
+            <div className="relative mx-auto w-60 h-60 sm:w-72 sm:h-72 flex flex-col items-center justify-center transition-all">
+              {/* Outer Scanning Frame */}
+              <div 
+                className={`relative w-full h-full rounded-3xl border-2 transition-colors duration-300 flex items-center justify-center overflow-hidden ${
+                  isTargetDetected 
+                    ? 'border-emerald-500/80 bg-emerald-500/5' 
+                    : 'border-dashed border-amber-400/60 bg-amber-500/5'
+                }`}
+              >
+                {/* Corner Guides */}
+                <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-lg ${isTargetDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-lg ${isTargetDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-lg ${isTargetDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-lg ${isTargetDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
 
-              <div className="absolute -bottom-7 text-center w-full">
-                <span className="text-[11px] text-stone-200 bg-stone-950/80 px-3 py-1 rounded-full border border-stone-800 backdrop-blur">
-                  وجّه الكاميرا نحو صفحة الكتاب واسحب لتدوير الحرف
-                </span>
+                {/* Animated Laser Scanning Line (Only while searching) */}
+                {!isTargetDetected && (
+                  <div 
+                    className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-amber-400 to-transparent shadow-lg shadow-amber-400/50 animate-pulse"
+                    style={{
+                      animation: 'scanLaser 2s ease-in-out infinite alternate',
+                    }}
+                  />
+                )}
+
+                {/* Prompt inside the reticle when searching */}
+                {!isTargetDetected && (
+                  <div className="bg-stone-950/80 backdrop-blur-md px-4 py-2.5 rounded-2xl text-center border border-amber-500/30 max-w-[85%] shadow-xl pointer-events-auto">
+                    <p className="text-amber-300 text-xs font-bold font-['Amiri',serif] mb-0.5">
+                      ضع صفحة {lesson.title} داخل هذا الإطار
+                    </p>
+                    <p className="text-[10px] text-stone-300">
+                      أو وجه الكاميرا نحو الحرف في البطاقة
+                    </p>
+                    {/* Live confidence meter */}
+                    <div className="w-full bg-stone-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                      <div 
+                        className="bg-amber-400 h-full transition-all duration-150"
+                        style={{ width: `${Math.round(detectionConfidence * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
+
+              {/* Sub-reticle Quick Action */}
+              {!isTargetDetected ? (
+                <div className="mt-3 flex items-center gap-2 pointer-events-auto">
+                  <button
+                    onClick={forceLockTarget}
+                    className="px-3.5 py-1.5 rounded-full bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-amber-500/20 transition active:scale-95"
+                    title="تجاوز المسح وتثبيت الحرف مباشرة"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>تثبيت الحرف الآن (فوري)</span>
+                  </button>
+
+                  <button
+                    onClick={onOpenTargetModal}
+                    className="px-3 py-1.5 rounded-full bg-stone-900/80 hover:bg-stone-800 text-stone-300 text-xs font-medium border border-stone-700 transition"
+                  >
+                    عرض البطاقة
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-3 pointer-events-auto">
+                  <span className="text-[11px] text-stone-200 bg-stone-950/85 px-3 py-1 rounded-full border border-stone-800 backdrop-blur">
+                    اسحب الشاشة لتدوير الحرف وفحص ميزان النقاط
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -536,7 +667,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
             </div>
           )}
 
-          {/* Bottom Floating Controls */}
+          {/* Bottom Floating Controls (Enabled when target detected or in studio) */}
           <div className="flex items-center justify-between gap-2 pointer-events-auto pt-2">
             {/* Toggles */}
             <div className="flex items-center gap-1.5 bg-stone-950/85 backdrop-blur-md p-1.5 rounded-2xl border border-stone-800">
