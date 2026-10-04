@@ -1,10 +1,16 @@
 /**
- * Optical Target & Calligraphy Page Recognition Engine
- * Uses jsQR + Canvas processing for 100% accurate, zero-false-positive AR target tracking.
- * Runs client-side, 100% free, MIT licensed, works on Vercel without backend.
+ * Natural Feature Tracking (NFT) Engine for Calligraphy Pages
+ * Directly recognizes the visual drawing of the calligraphy letter on the page.
+ * ZERO QR codes, ZERO barcodes.
  */
 
-import jsQR from 'jsqr';
+import { imageMatcher, ImageMatchResult } from './imageFeatureMatcher';
+import { INITIAL_LESSONS } from '../data/lessons';
+
+// Register initial lesson artworks
+INITIAL_LESSONS.forEach(lesson => {
+  imageMatcher.registerLessonArtwork(lesson.id, lesson.letter, lesson.script);
+});
 
 export interface DetectionResult {
   detected: boolean;
@@ -14,89 +20,18 @@ export interface DetectionResult {
 }
 
 class CalligraphyPageDetector {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D | null;
-
-  constructor() {
-    this.canvas = document.createElement('canvas');
-    // Process at 480x360 or 400x300 for fast 60fps performance on mobile devices
-    this.canvas.width = 400;
-    this.canvas.height = 300;
-    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+  public analyzeFrame(video: HTMLVideoElement, currentLessonId: string): DetectionResult {
+    const res: ImageMatchResult = imageMatcher.matchLiveFrame(video, currentLessonId);
+    return {
+      detected: res.matched,
+      detectedLessonId: res.matchedLessonId,
+      confidence: res.confidence,
+      message: res.details || 'جاري مطابقة صورة رسمة الحرف...',
+    };
   }
 
-  /**
-   * Scans the live camera video frame for the unique calligraphy lesson target.
-   * Will NEVER trigger on walls, tables, keyboards or random objects!
-   */
-  public analyzeFrame(video: HTMLVideoElement, currentLessonId: string): DetectionResult {
-    if (!this.ctx || !video || video.readyState < 2 || video.videoWidth === 0) {
-      return {
-        detected: false,
-        confidence: 0,
-        message: 'جاري تشغيل كاميرا الهاتف...'
-      };
-    }
-
-    try {
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
-
-      // Draw the video frame to offscreen canvas
-      this.ctx.drawImage(video, 0, 0, vw, vh, 0, 0, this.canvas.width, this.canvas.height);
-
-      const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-
-      // Run optical marker decode
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'attemptBoth',
-      });
-
-      if (code && code.data) {
-        const data = code.data.trim();
-
-        // Check if this QR matches any calligraphy lesson target
-        // Format: AR-LESSON:<id> or URL containing target or page number
-        if (data.includes('AR-LESSON:') || data.includes('AR-TARGET:') || data.includes(currentLessonId)) {
-          let matchedId = currentLessonId;
-
-          if (data.includes('AR-LESSON:')) {
-            matchedId = data.replace('AR-LESSON:', '').trim();
-          }
-
-          return {
-            detected: true,
-            detectedLessonId: matchedId,
-            confidence: 1.0,
-            message: 'تم التعرف على علامة صفحة الدرس بنجاح!'
-          };
-        }
-
-        // Generic target tag match
-        if (data.includes('calligraphy') || data.includes('islamart') || data.includes('ais-')) {
-          return {
-            detected: true,
-            detectedLessonId: currentLessonId,
-            confidence: 0.95,
-            message: 'تم التعرف على بطاقة كراسة الخط العربي'
-          };
-        }
-      }
-
-      // No matching optical target found in frame
-      return {
-        detected: false,
-        confidence: 0.05,
-        message: 'وجّه الكاميرا نحو بطاقة صفحة الدرس في الكتاب أو على الشاشة'
-      };
-    } catch (e) {
-      console.warn('Optical detector error:', e);
-      return {
-        detected: false,
-        confidence: 0,
-        message: 'خطأ أثناء فحص الصورة'
-      };
-    }
+  public registerCustomLesson(lessonId: string, letter: string, script: string) {
+    imageMatcher.registerLessonArtwork(lessonId, letter, script);
   }
 }
 

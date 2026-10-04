@@ -60,65 +60,38 @@ export const TargetCardModal: React.FC<TargetCardModalProps> = ({
             </div>
 
             {/* Center: The Massive Calligraphic Letter with ink splash */}
-            <div className="my-4 z-10 flex flex-col items-center">
-              <span className="text-[100px] font-bold text-stone-950 leading-none select-none font-['Amiri',serif] drop-shadow-md">
+            <div className="my-6 z-10 flex flex-col items-center">
+              <span className="text-[120px] font-bold text-stone-950 leading-none select-none font-['Amiri',serif] drop-shadow-md">
                 {lesson.letter}
               </span>
-              <span className="text-base font-bold text-amber-950 mt-1 font-['Amiri',serif]">
+              <span className="text-lg font-bold text-amber-950 mt-2 font-['Amiri',serif]">
                 {lesson.title} - {lesson.scriptNameArabic}
               </span>
-              <span className="text-xs text-amber-900/90 mt-0.5">
+              <span className="text-xs text-amber-900/90 mt-1">
                 ميزان الاتساع: {lesson.pointScale.widthDots} نقاط • زاوية القلم: {lesson.penAngleDegrees}°
               </span>
             </div>
 
-            {/* Optical AR Target Stamp directly on the lesson card */}
-            <div className="w-full pt-3 border-t border-amber-900/20 z-10 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=AR-LESSON:${lesson.id}`}
-                  alt="ختم تتبع الواقع المعزز"
-                  className="w-16 h-16 rounded-lg border-2 border-amber-900/50 p-1 bg-white shadow-sm"
-                />
-                <div className="text-right">
-                  <span className="text-xs font-bold text-amber-950 block font-['Amiri',serif]">
-                    ختم التتبع البصري (AR Target)
-                  </span>
-                  <span className="text-[10px] text-amber-900 font-mono block">
-                    كود الدرس: {lesson.id}
-                  </span>
-                  <span className="text-[10px] text-emerald-800 font-bold block mt-0.5">
-                    ✓ وجّه الكاميرا إلى هذا الختم أو الحرف
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-left text-xs font-bold text-amber-950 font-mono">
-                ص {lesson.pageNumber}
-              </div>
+            {/* Natural Image Target Footer */}
+            <div className="w-full pt-3 border-t border-amber-900/20 z-10 flex items-center justify-between text-xs text-amber-950">
+              <span className="font-semibold font-['Amiri',serif]">
+                ✓ الكاميرا تتعرف مباشرة على رسمة حرف ({lesson.letter})
+              </span>
+              <span className="font-bold font-mono">
+                صفحة #{lesson.pageNumber}
+              </span>
             </div>
           </div>
 
-          {/* Instructions and QR Code for Mobile */}
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2 bg-stone-900/80 p-3 rounded-xl border border-stone-800 text-xs text-stone-400 leading-relaxed flex flex-col justify-center">
-              <p className="flex items-center gap-1.5 text-amber-300 font-semibold mb-1">
-                <Sparkles className="w-3.5 h-3.5" />
-                كيف تختبر الواقع المعزز على هاتفك؟
-              </p>
-              <p className="text-[11px]">
-                امسح رمز الاستجابة السريعة (QR) بكاميرا هاتفك ليفتح التطبيق في متصفح الجوال، وسيطلب المتصفح إذن الكاميرا فوراً بدون قيود المعاينة!
-              </p>
-            </div>
-
-            <div className="flex flex-col items-center justify-center p-2 rounded-xl bg-stone-900 border border-stone-800">
-              <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(window.location.href)}`}
-                alt="QR Code"
-                className="w-20 h-20 rounded-lg bg-white p-1"
-              />
-              <span className="text-[10px] text-stone-400 mt-1">افتح على الجوال</span>
-            </div>
+          {/* Instructions for Real Image Tracking */}
+          <div className="mt-4 bg-stone-900/80 p-3.5 rounded-xl border border-stone-800 text-xs text-stone-300 leading-relaxed">
+            <p className="flex items-center gap-1.5 text-amber-300 font-bold mb-1">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              تتبع الصورة الطبيعية (Natural Image Tracking):
+            </p>
+            <p className="text-[11px] text-stone-400">
+              وجه كاميرا الهاتف نحو رسمة حرف <strong className="text-amber-200">({lesson.letter})</strong> في هذه الصفحة؛ سيتعرف النظام تلقائياً على شكل الحرك وانحناءات الحبر ويرتفع المجسم ثلاثي الأبعاد فوق الصفحة مباشرة دون أي باركود!
+            </p>
           </div>
         </div>
 
