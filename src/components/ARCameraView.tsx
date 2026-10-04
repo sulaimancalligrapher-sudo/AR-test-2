@@ -32,6 +32,7 @@ interface ARCameraViewProps {
   onTogglePenAngle: () => void;
   onChangeMaterial: (mat: MaterialType) => void;
   onOpenTargetModal: () => void;
+  onDetectOtherLesson?: (lessonId: string) => void;
 }
 
 type ViewMode = 'idle' | 'ar' | 'studio';
@@ -45,6 +46,7 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
   onTogglePenAngle,
   onChangeMaterial,
   onOpenTargetModal,
+  onDetectOtherLesson,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -194,23 +196,20 @@ export const ARCameraView: React.FC<ARCameraViewProps> = ({
     const interval = setInterval(() => {
       if (!videoRef.current || videoRef.current.readyState < 2) return;
 
-      const result = cvDetector.analyzeFrame(videoRef.current);
+      const result = cvDetector.analyzeFrame(videoRef.current, lesson.id);
       setDetectionConfidence(result.confidence);
 
       if (result.detected) {
-        consecutiveMatchesRef.current += 1;
-        // Require 2 consecutive frames for stability
-        if (consecutiveMatchesRef.current >= 2) {
-          setIsTargetDetected(true);
-          playARSuccessChime();
+        if (result.detectedLessonId && result.detectedLessonId !== lesson.id && onDetectOtherLesson) {
+          onDetectOtherLesson(result.detectedLessonId);
         }
-      } else {
-        consecutiveMatchesRef.current = Math.max(0, consecutiveMatchesRef.current - 1);
+        setIsTargetDetected(true);
+        playARSuccessChime();
       }
-    }, 180);
+    }, 150);
 
     return () => clearInterval(interval);
-  }, [viewMode, isTargetDetected]);
+  }, [viewMode, isTargetDetected, lesson.id, onDetectOtherLesson]);
 
   // Initialize Three.js Canvas
   useEffect(() => {

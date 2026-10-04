@@ -112,6 +112,12 @@ export default function App() {
           onTogglePenAngle={() => setShowPenAngle(!showPenAngle)}
           onChangeMaterial={(mat) => setMaterialType(mat)}
           onOpenTargetModal={() => setIsTargetModalOpen(true)}
+          onDetectOtherLesson={(lessonId) => {
+            const matched = lessons.find(l => l.id === lessonId);
+            if (matched && matched.id !== currentLesson.id) {
+              setCurrentLesson(matched);
+            }
+          }}
         />
 
         {/* In-Camera Educational HUD (Rules, Audio Player, Video Modal, Anatomy) */}
