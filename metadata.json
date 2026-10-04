@@ -1,0 +1,6 @@
+{
+  "name": "خطاط AR - الواقع المعزز لتعليم الخط العربي",
+  "description": "تطبيق ويب مجاني 100% للواقع المعزز لتعليم فن الخط العربي وتجسيد الحروف ثلاثية الأبعاد وميزان النقاط والشروحات التفاعلية لصفحات الكتاب.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
